@@ -1,5 +1,0 @@
-streamlit
-pandas
-ortools
-openpyxl
-holidays
