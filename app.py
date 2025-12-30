@@ -7,20 +7,21 @@ import csv
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 import holidays
+from typing import Dict, Set, List, Tuple, Optional
 
 
-def calc_month_days(yil, ay):
+def calc_month_days(yil: int, ay: int) -> int:
     """Ayın gün sayısını verir"""
     if ay == 12:
         return (datetime(yil + 1, 1, 1) - datetime(yil, 12, 1)).days
     return (datetime(yil, ay + 1, 1) - datetime(yil, ay, 1)).days
 
 
-def parse_day_numbers(text: str, max_day: int):
+def parse_day_numbers(text: str, max_day: int) -> Set[int]:
     """Parse day numbers like: 1,5,12 or 1-5,12"""
     if not text or not text.strip():
         return set()
-    out = set()
+    out: Set[int] = set()
     parts = [p.strip() for p in text.split(',') if p.strip()]
     for p in parts:
         if '-' in p:
@@ -33,28 +34,41 @@ def parse_day_numbers(text: str, max_day: int):
                 for d in range(a, b + 1):
                     if 1 <= d <= max_day:
                         out.add(d)
-            except:
+            except (ValueError, AttributeError):
                 pass
         else:
             try:
                 d = int(p)
                 if 1 <= d <= max_day:
                     out.add(d)
-            except:
+            except (ValueError, AttributeError):
                 pass
     return out
 
 
-def get_turkish_holidays(year, month):
+def get_turkish_holidays(year: int, month: int) -> Dict[int, str]:
     """Türkiye'deki resmi tatilleri otomatik çeker"""
     try:
         tr_holidays = holidays.Turkey(years=year)
         return {date.day: name for date, name in tr_holidays.items() if date.month == month}
-    except:
+    except Exception:
         return {}
 
 
-def solve_schedule(yil, ay, personeller, target, izinler, holidays, no_pairs, want_pairs, prefer_map=None, soft_no_pairs=None, w_gap3=300, gap2_weight=1000):
+def solve_schedule(
+    yil: int,
+    ay: int,
+    personeller: List[str],
+    target: Dict[str, int],
+    izinler: Dict[str, Set[int]],
+    holidays: Set[int],
+    no_pairs: List[Tuple[str, str]],
+    want_pairs: List[Tuple[str, str, int]],
+    prefer_map: Optional[Dict[str, Set[int]]] = None,
+    soft_no_pairs: Optional[List[Tuple[str, str]]] = None,
+    w_gap3: int = 300,
+    gap2_weight: int = 1000
+) -> Dict[int, List[str]]:
     """CP-SAT Solver"""
     if prefer_map is None:
         prefer_map = {}
@@ -86,10 +100,10 @@ def solve_schedule(yil, ay, personeller, target, izinler, holidays, no_pairs, wa
     if total_target < gun_sayisi:
         raise ValueError(f"İmkânsız: toplam hedef ({total_target}) < gün sayısı ({gun_sayisi}).")
 
-    def weekday(d):
+    def weekday(d: int) -> int:
         return datetime(yil, ay, d).weekday()
 
-    def days_by_weekday(wd):
+    def days_by_weekday(wd: int) -> List[int]:
         return [d for d in range(1, gun_sayisi + 1) if weekday(d) == wd]
 
     # Model
@@ -134,7 +148,7 @@ def solve_schedule(yil, ay, personeller, target, izinler, holidays, no_pairs, wa
         model.Add(sum(gap2) <= MAX_GUNASIRI_PER_PERSON)
 
     # Birlikte tutamasın (hard)
-    name_to_idx = {n: i for i, n in enumerate(personeller)}
+    name_to_idx: Dict[str, int] = {n: i for i, n in enumerate(personeller)}
     for (a, b) in no_pairs:
         if a not in name_to_idx or b not in name_to_idx:
             continue
@@ -162,10 +176,10 @@ def solve_schedule(yil, ay, personeller, target, izinler, holidays, no_pairs, wa
     holiday_days = sorted(list(holidays)) if holidays else []
     weekend_like_days = sorted(list(set(fri_days + sat_days + sun_days) | set(holiday_days)))
 
-    def add_fairness(days_set, weight, tag):
+    def add_fairness(days_set: List[int], weight: int, tag: str) -> None:
         if not days_set:
             return
-        counts = []
+        counts: List[cp_model.IntVar] = []
         for p in range(nP):
             c = model.NewIntVar(0, len(days_set), f"{tag}_cnt_{p}")
             model.Add(c == sum(x[p, d] for d in days_set))
@@ -241,7 +255,7 @@ def solve_schedule(yil, ay, personeller, target, izinler, holidays, no_pairs, wa
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         raise ValueError("Çözüm bulunamadı (kısıtlar fazla sıkı olabilir).")
 
-    schedule = {}
+    schedule: Dict[int, List[str]] = {}
     for d in range(1, gun_sayisi + 1):
         schedule[d] = []
         for p, name in enumerate(personeller):
@@ -251,16 +265,27 @@ def solve_schedule(yil, ay, personeller, target, izinler, holidays, no_pairs, wa
     return schedule
 
 
-def diagnose_no_solution(yil, ay, personeller, target_map, izinler, holidays, want_pairs, no_pairs, min_staff_per_day=1, max_staff_per_day=3):
+def diagnose_no_solution(
+    yil: int,
+    ay: int,
+    personeller: List[str],
+    target_map: Dict[str, int],
+    izinler: Dict[str, Set[int]],
+    holidays: Set[int],
+    want_pairs: List[Tuple[str, str, int]],
+    no_pairs: List[Tuple[str, str]],
+    min_staff_per_day: int = 1,
+    max_staff_per_day: int = 3
+) -> List[str]:
     """CP-SAT 'neden' söylemez. Biz hızlı mantık kontrolleri yapıp olası nedenleri üretiriz."""
-    problems = []
+    problems: List[str] = []
     gun_sayisi = calc_month_days(yil, ay)
     holidays_set = set(holidays or [])
 
     # 1) Gün bazında müsaitlik
-    avail_by_day = {}
+    avail_by_day: Dict[int, List[str]] = {}
     for d in range(1, gun_sayisi + 1):
-        avail = []
+        avail: List[str] = []
         for p in personeller:
             if d not in izinler.get(p, set()):
                 avail.append(p)
@@ -334,7 +359,7 @@ st.set_page_config(page_title="Nöbet Planlayıcı", layout="wide")
 st.title("🏥 Acil Servis Nöbet Planlayıcı")
 
 
-def init_defaults():
+def init_defaults() -> None:
     """Session state defaults"""
     ss = st.session_state
     ss.setdefault("yil", 2026)
